@@ -104,7 +104,7 @@ function printUsage() {
       "  node scripts/codex-companion.mjs setup [--enable-review-gate|--disable-review-gate] [--json]",
       "  node scripts/codex-companion.mjs review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>]",
       "  node scripts/codex-companion.mjs adversarial-review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>] [focus text]",
-      "  node scripts/codex-companion.mjs task [--background] [--write] [--resume-last|--resume|--fresh] [--model <model|spark>] [--effort <none|minimal|low|medium|high|xhigh>] [prompt]",
+      "  node scripts/codex-companion.mjs task [--background] [--write] [--resume-last|--resume|--resume-thread <thread-id>|--fresh] [--model <model|spark>] [--effort <none|minimal|low|medium|high|xhigh>] [prompt]",
       "  node scripts/codex-companion.mjs transfer [--source <claude-jsonl>] [--json]",
       "  node scripts/codex-companion.mjs status [job-id] [--all] [--json]",
       "  node scripts/codex-companion.mjs result [job-id] [--json]",
@@ -438,7 +438,12 @@ async function executeReviewRun(request) {
     model: request.model,
     sandbox: companionSandboxOverride() ?? "read-only",
     outputSchema: readOutputSchema(REVIEW_SCHEMA),
-    onProgress: request.onProgress
+    onProgress: request.onProgress,
+    // SafetyKit fork: persist the review thread so a driver death mid-run
+    // leaves it resumable (`task --resume-thread <threadId>`, id recorded
+    // in the job state file) instead of discarding the investigation.
+    persistThread: true,
+    threadName: `Adversarial Review: ${context.target.label}`
   });
   const parsed = parseStructuredOutput(result.finalMessage, {
     status: result.status,
@@ -489,11 +494,14 @@ async function executeTaskRun(request) {
 
   const taskMetadata = buildTaskRunMetadata({
     prompt: request.prompt,
-    resumeLast: request.resumeLast
+    resumeLast: request.resumeLast || Boolean(request.resumeThreadId)
   });
 
-  let resumeThreadId = null;
-  if (request.resumeLast) {
+  // SafetyKit fork: an explicit thread id resumes any persisted thread
+  // (adversarial-review threads included); --resume-last stays limited to
+  // tracked task jobs.
+  let resumeThreadId = request.resumeThreadId ?? null;
+  if (!resumeThreadId && request.resumeLast) {
     const latestThread = await resolveLatestTrackedTaskThread(workspaceRoot, {
       excludeJobId: request.jobId
     });
@@ -504,7 +512,7 @@ async function executeTaskRun(request) {
   }
 
   if (!request.prompt && !resumeThreadId) {
-    throw new Error("Provide a prompt, a prompt file, piped stdin, or use --resume-last.");
+    throw new Error("Provide a prompt, a prompt file, piped stdin, or use --resume-last / --resume-thread.");
   }
 
   const result = await runAppServerTurn(workspaceRoot, {
@@ -626,7 +634,7 @@ function buildTaskJob(workspaceRoot, taskMetadata, write) {
   });
 }
 
-function buildTaskRequest({ cwd, model, effort, prompt, write, resumeLast, jobId }) {
+function buildTaskRequest({ cwd, model, effort, prompt, write, resumeLast, resumeThreadId = null, jobId }) {
   return {
     cwd,
     model,
@@ -634,6 +642,7 @@ function buildTaskRequest({ cwd, model, effort, prompt, write, resumeLast, jobId
     prompt,
     write,
     resumeLast,
+    resumeThreadId,
     jobId
   };
 }
@@ -786,7 +795,10 @@ async function handleReview(argv) {
 
 async function handleTask(argv) {
   const { options, positionals } = parseCommandInput(argv, {
-    valueOptions: ["model", "effort", "cwd", "prompt-file"],
+    // SafetyKit fork: --resume-thread <thread-id> resumes a specific
+    // persisted thread (e.g. an adversarial-review thread whose driver
+    // died), bypassing the task-job-only --resume-last lookup.
+    valueOptions: ["model", "effort", "cwd", "prompt-file", "resume-thread"],
     booleanOptions: ["json", "write", "resume-last", "resume", "fresh", "background"],
     aliasMap: {
       m: "model"
@@ -800,19 +812,25 @@ async function handleTask(argv) {
   const prompt = readTaskPrompt(cwd, options, positionals);
 
   const resumeLast = Boolean(options["resume-last"] || options.resume);
+  const resumeThreadId = typeof options["resume-thread"] === "string" && options["resume-thread"].trim()
+    ? options["resume-thread"].trim()
+    : null;
   const fresh = Boolean(options.fresh);
-  if (resumeLast && fresh) {
-    throw new Error("Choose either --resume/--resume-last or --fresh.");
+  if ((resumeLast || resumeThreadId) && fresh) {
+    throw new Error("Choose either --resume/--resume-last/--resume-thread or --fresh.");
+  }
+  if (resumeLast && resumeThreadId) {
+    throw new Error("Choose either --resume/--resume-last or --resume-thread, not both.");
   }
   const write = Boolean(options.write);
   const taskMetadata = buildTaskRunMetadata({
     prompt,
-    resumeLast
+    resumeLast: resumeLast || Boolean(resumeThreadId)
   });
 
   if (options.background) {
     ensureCodexAvailable(cwd);
-    requireTaskRequest(prompt, resumeLast);
+    requireTaskRequest(prompt, resumeLast || Boolean(resumeThreadId));
 
     const job = buildTaskJob(workspaceRoot, taskMetadata, write);
     const request = buildTaskRequest({
@@ -822,6 +840,7 @@ async function handleTask(argv) {
       prompt,
       write,
       resumeLast,
+      resumeThreadId,
       jobId: job.id
     });
     const { payload } = enqueueBackgroundTask(cwd, job, request);
@@ -840,6 +859,7 @@ async function handleTask(argv) {
         prompt,
         write,
         resumeLast,
+        resumeThreadId,
         jobId: job.id,
         onProgress: progress
       }),
