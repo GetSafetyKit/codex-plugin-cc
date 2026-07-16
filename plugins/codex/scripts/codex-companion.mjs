@@ -70,6 +70,31 @@ const DEFAULT_STATUS_WAIT_TIMEOUT_MS = 240000;
 const DEFAULT_STATUS_POLL_INTERVAL_MS = 2000;
 const VALID_REASONING_EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh"]);
 const MODEL_ALIASES = new Map([["spark", "gpt-5.3-codex-spark"]]);
+
+// SafetyKit fork: allow the caller to override the sandbox mode the upstream
+// code hardcodes per job kind. "config-default" omits the per-thread sandbox
+// field entirely so the app server falls back to the Codex config's
+// `default_permissions` profile (see buildThreadParams in lib/codex.mjs).
+const COMPANION_SANDBOX_ENV = "CODEX_COMPANION_SANDBOX";
+const COMPANION_SANDBOX_VALUES = new Set([
+  "read-only",
+  "workspace-write",
+  "danger-full-access",
+  "config-default"
+]);
+
+function companionSandboxOverride() {
+  const value = process.env[COMPANION_SANDBOX_ENV]?.trim();
+  if (!value) {
+    return null;
+  }
+  if (!COMPANION_SANDBOX_VALUES.has(value)) {
+    throw new Error(
+      `Invalid ${COMPANION_SANDBOX_ENV} value: ${value}. Expected one of: ${[...COMPANION_SANDBOX_VALUES].join(", ")}.`
+    );
+  }
+  return value;
+}
 const STOP_REVIEW_TASK_MARKER = "Run a stop-gate review of the previous Claude turn.";
 
 function printUsage() {
@@ -411,7 +436,7 @@ async function executeReviewRun(request) {
   const result = await runAppServerTurn(context.repoRoot, {
     prompt,
     model: request.model,
-    sandbox: "read-only",
+    sandbox: companionSandboxOverride() ?? "read-only",
     outputSchema: readOutputSchema(REVIEW_SCHEMA),
     onProgress: request.onProgress
   });
@@ -488,7 +513,7 @@ async function executeTaskRun(request) {
     defaultPrompt: resumeThreadId ? DEFAULT_CONTINUE_PROMPT : "",
     model: request.model,
     effort: request.effort,
-    sandbox: request.write ? "workspace-write" : "read-only",
+    sandbox: companionSandboxOverride() ?? (request.write ? "workspace-write" : "read-only"),
     onProgress: request.onProgress,
     persistThread: true,
     threadName: resumeThreadId ? null : buildPersistentTaskThreadName(request.prompt || DEFAULT_CONTINUE_PROMPT)

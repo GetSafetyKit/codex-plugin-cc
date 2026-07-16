@@ -1,0 +1,18 @@
+#!/bin/sh
+# SafetyKit launcher for the forked codex-companion runtime.
+#
+# Registered in ios-sdk/.claude/settings.json `sandbox.excludedCommands`:
+# Codex applies its own Seatbelt sandbox to every command its agent runs,
+# and Seatbelt cannot nest inside Claude Code's Bash sandbox, so this
+# wrapper must run outside the Claude sandbox for the inner one to work.
+# Invoke it as `~/code/codex-plugin-cc/bin/codex-companion …` (literal
+# tilde) so the excludedCommands pattern matches the command string.
+#
+# Threads default to the Codex config's `default_permissions` profile
+# (default-dev in ios-sdk) instead of upstream's hardcoded read-only mode.
+# Set CODEX_COMPANION_SANDBOX to override: read-only | workspace-write |
+# danger-full-access | config-default.
+set -e
+FORK_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+export CODEX_COMPANION_SANDBOX="${CODEX_COMPANION_SANDBOX:-config-default}"
+exec node "$FORK_ROOT/plugins/codex/scripts/codex-companion.mjs" "$@"

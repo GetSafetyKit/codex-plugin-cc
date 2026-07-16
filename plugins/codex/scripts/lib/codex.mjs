@@ -59,13 +59,21 @@ function cleanCodexStderr(stderr) {
     .join("\n");
 }
 
+// SafetyKit fork: the sentinel "config-default" omits the per-thread sandbox
+// field so the app server resolves the sandbox from the Codex config's
+// `default_permissions` profile instead of a caller-fixed mode.
+function resolveSandboxParam(sandbox) {
+  const value = sandbox ?? "read-only";
+  return value === "config-default" ? {} : { sandbox: value };
+}
+
 /** @returns {ThreadStartParams} */
 function buildThreadParams(cwd, options = {}) {
   return {
     cwd,
     model: options.model ?? null,
     approvalPolicy: options.approvalPolicy ?? "never",
-    sandbox: options.sandbox ?? "read-only",
+    ...resolveSandboxParam(options.sandbox),
     serviceName: SERVICE_NAME,
     ephemeral: options.ephemeral ?? true
   };
@@ -78,7 +86,7 @@ function buildResumeParams(threadId, cwd, options = {}) {
     cwd,
     model: options.model ?? null,
     approvalPolicy: options.approvalPolicy ?? "never",
-    sandbox: options.sandbox ?? "read-only"
+    ...resolveSandboxParam(options.sandbox)
   };
 }
 
