@@ -1,7 +1,7 @@
 {
   "name": "openai-codex",
   "owner": {
-    "name": "OpenAI"
+    "name": "OpenAI (SafetyKit fork)"
   },
   "metadata": {
     "description": "Codex plugins to use in Claude Code for delegation and code review.",
@@ -13,7 +13,7 @@
       "description": "Use Codex from Claude Code to review code or delegate tasks.",
       "version": "1.0.6",
       "author": {
-        "name": "OpenAI"
+        "name": "OpenAI (SafetyKit fork)"
       },
       "source": "./plugins/codex"
     }
